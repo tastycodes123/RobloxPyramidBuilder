@@ -6,6 +6,97 @@ local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local RunService = game:GetService("RunService")
 
+-- Followers / Team system
+local followerData = {} -- [player.UserId] = { followers = {Model, ...} }
+
+local function getFollowerCount(player)
+	local d = followerData[player.UserId]
+	if not d then return 0 end
+	return #d.followers
+end
+
+local function cleanupFollowersForPlayer(player)
+	local d = followerData[player.UserId]
+	if not d then return end
+	for _, model in ipairs(d.followers) do
+		if model and model.Parent then
+			model:Destroy()
+		end
+	end
+	followerData[player.UserId] = nil
+end
+
+local function createFollowerModel(player, index)
+	local model = Instance.new("Model")
+	model.Name = "Follower_" .. player.Name .. "_" .. tostring(index)
+
+	local root = Instance.new("Part")
+	root.Name = "HumanoidRootPart"
+	root.Size = Vector3.new(2, 2, 1)
+	root.Anchored = false
+	root.CanCollide = false
+	root.Position = (player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player.Character.HumanoidRootPart.Position) or Vector3.new(0,5,0)
+	root.Parent = model
+
+	local head = Instance.new("Part")
+	head.Name = "Head"
+	head.Size = Vector3.new(2, 1, 1)
+	head.Position = root.Position + Vector3.new(0, 1.5, 0)
+	head.Parent = model
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.WalkSpeed = 16
+	humanoid.Parent = model
+
+	model.PrimaryPart = root
+	model.Parent = workspace
+
+	-- Simple cosmetic: small neon tag to identify follower
+	local tag = Instance.new("BillboardGui")
+	tag.Size = UDim2.new(0,60,0,20)
+	tag.StudsOffset = Vector3.new(0,2.5,0)
+	tag.AlwaysOnTop = true
+	tag.Parent = head
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1,0,1,0)
+	label.BackgroundTransparency = 1
+	label.Text = "+"
+	label.TextColor3 = Color3.new(1,1,1)
+	label.TextStrokeTransparency = 0
+	label.Parent = tag
+
+	return model, humanoid
+end
+
+-- Update follower positions each Heartbeat
+RunService.Heartbeat:Connect(function()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local d = followerData[player.UserId]
+		if d and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			local leaderHRP = player.Character.HumanoidRootPart
+			for i, model in ipairs(d.followers) do
+				if model and model.PrimaryPart and model.Parent then
+					-- formation: follow behind the player in a staggered line
+					local spacing = 3.5
+					local row = math.floor((i - 1) / 4) -- rows of 4
+					local col = (i - 1) % 4
+					local sideOffset = (col - 1.5) * 2.4
+					local backOffset = (row + 1) * spacing
+					local targetPos = leaderHRP.Position - leaderHRP.CFrame.LookVector * backOffset + leaderHRP.CFrame.RightVector * sideOffset
+					-- Slight vertical offset to avoid clipping
+					targetPos = Vector3.new(targetPos.X, leaderHRP.Position.Y, targetPos.Z)
+					-- Move follower toward target
+					local primary = model.PrimaryPart
+					if primary then
+						primary.Velocity = Vector3.new(0,0,0)
+						-- Smooth move using CFrame interpolation
+						primary.CFrame = primary.CFrame:Lerp(CFrame.new(targetPos, leaderHRP.Position), 0.2)
+					end
+				end
+			end
+		end
+	end
+end)
 -- Random hello messages to verify script is running
 local helloMessages = {
 	"Hello from the desert!",
@@ -40,6 +131,7 @@ local currentBlockIndex = 0
 local totalBlocks = 0
 local placedBlocks = {}
 local pyramidModel = nil
+local isBuilding = false
 
 -- Pyramid positions (north, south, east, west around center)
 local pyramidPositions = {
@@ -233,6 +325,125 @@ local function placeBlocks()
 	return true
 end
 
+-- Place a specific number of blocks (used to place N blocks per turn)
+local function placeBlocksByCount(count)
+	if currentBlockIndex >= totalBlocks then
+		return 0
+	end
+
+	local placed = 0
+	for i = 1, count do
+		if currentBlockIndex >= totalBlocks then break end
+		currentBlockIndex = currentBlockIndex + 1
+		local position, level = getBlockPosition(currentBlockIndex)
+
+		local block = Instance.new("Part")
+		block.Name = "PyramidBlock" .. currentBlockIndex
+		block.Size = Vector3.new(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE)
+		block.Position = position
+		block.Anchored = true
+		block.CanCollide = true
+		block.Material = Enum.Material.Sand
+
+		local colorValue = 1 - (level / currentPyramidSize) * 0.3
+		block.Color = Color3.new(colorValue * 0.8, colorValue * 0.7, colorValue * 0.5)
+
+		block.Parent = pyramidModel
+		table.insert(placedBlocks, block)
+		placed = placed + 1
+	end
+
+	if placed > 0 then
+		print("Placed " .. placed .. " blocks. Total: " .. currentBlockIndex .. " of " .. totalBlocks)
+	end
+
+	if currentBlockIndex >= totalBlocks then
+		local pyramidType = (currentPyramidNumber <= 3) and "Normal" or "MEGA"
+		print(pyramidType .. " PYRAMID #" .. currentPyramidNumber .. " COMPLETE! Fireworks!")
+		createEntrance()
+		triggerFireworks()
+		print("Pyramid #" .. currentPyramidNumber .. " complete! Click another button to build a different pyramid!")
+	end
+
+	return placed
+end
+
+-- Follower management helpers
+local function ensureFollowerData(player)
+	if not followerData[player.UserId] then
+		followerData[player.UserId] = { followers = {} }
+	end
+	return followerData[player.UserId]
+end
+
+local function addFollowerForPlayer(player)
+	local d = ensureFollowerData(player)
+	local idx = #d.followers + 1
+	local model, humanoid = createFollowerModel(player, idx)
+	table.insert(d.followers, model)
+	return model
+end
+
+local function removeFollowerForPlayer(player)
+	local d = followerData[player.UserId]
+	if not d or #d.followers == 0 then return false end
+	local model = table.remove(d.followers)
+	if model and model.Parent then model:Destroy() end
+	return true
+end
+
+-- Create plus/minus buttons near spawn
+local function createNoobButtons()
+	local spawnPos = Vector3.new(0, 5, 0)
+
+	local function makeButton(name, offset, symbol, onClickColor)
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Size = Vector3.new(6, 8, 3)
+		part.Position = spawnPos + offset
+		part.Anchored = true
+		part.CanCollide = false
+		part.Material = Enum.Material.Plastic
+		part.BrickColor = BrickColor.new("Bright yellow")
+		part.Parent = workspace
+
+		local click = Instance.new("ClickDetector")
+		click.MaxActivationDistance = 32
+		click.Parent = part
+
+		local gui = Instance.new("BillboardGui")
+		gui.Size = UDim2.new(0,150,0,100)
+		gui.StudsOffset = Vector3.new(0,4,0)
+		gui.AlwaysOnTop = true
+		gui.Parent = part
+
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1,0,1,0)
+		label.BackgroundTransparency = 1
+		label.Text = symbol
+		label.Font = Enum.Font.SourceSansBold
+		label.TextSize = 48
+		label.TextColor3 = Color3.new(1,1,1)
+		label.Parent = gui
+
+		-- small icon to look like a 'noob' silhouette (simple square head + body)
+		-- For simplicity we use the part itself as the avatar-shaped button
+
+		click.MouseClick:Connect(function(player)
+			if symbol == "+" then
+				addFollowerForPlayer(player)
+				print(player.Name .. " gained a follower. Count = " .. getFollowerCount(player))
+			else
+				local removed = removeFollowerForPlayer(player)
+				print(player.Name .. " removed a follower. Removed=" .. tostring(removed) .. ", Count = " .. getFollowerCount(player))
+			end
+		end)
+	end
+
+	makeButton("AddNoobButton", Vector3.new(-8,0,0), "+")
+	makeButton("RemoveNoobButton", Vector3.new(8,0,0), "-")
+end
+
 -- Create entrance by removing one block from bottom level
 local function createEntrance()
 	if not pyramidModel then return end
@@ -400,7 +611,7 @@ local function createBuildButton()
 	label.BackgroundTransparency = 0.3
 	label.BorderSizePixel = 5
 	label.BorderColor3 = Color3.new(0, 1, 0)
-	label.Text = "BUILD BUTTON\n\nCLICK TO ADD 10 BLOCKS"
+	label.Text = "BUILD BUTTON\n\nCLICK TO START BUILD (blocks per turn = your follower count)"
 	label.TextColor3 = Color3.new(1, 1, 1)
 	label.TextSize = 50
 	label.Font = Enum.Font.GothamBold
@@ -411,11 +622,34 @@ local function createBuildButton()
 	-- Click handler
 	clickDetector.MouseClick:Connect(function(player)
 		print(player.Name .. " clicked the build button!")
-		if currentBlockIndex < totalBlocks then
-			placeBlocks()
-		else
+		if currentBlockIndex >= totalBlocks then
 			print("Pyramid complete!")
+			return
 		end
+
+		-- If no pyramid was selected yet, start the first one
+		if currentPyramidNumber == 0 then
+			startNewPyramid(1)
+		end
+
+		if isBuilding then
+			print("A build is already in progress.")
+			return
+		end
+		isBuilding = true
+		-- Build loop: each turn place as many blocks as the player currently has followers
+		spawn(function()
+			while currentBlockIndex < totalBlocks do
+				local followerCount = getFollowerCount(player)
+				if followerCount > 0 then
+					placeBlocksByCount(followerCount)
+				else
+					print(player.Name .. " has no followers this turn; placing 0 blocks.")
+				end
+				task.wait(1)
+			end
+			isBuilding = false
+		end)
 	end)
 	
 	-- Simple pulsing
@@ -633,5 +867,11 @@ end
 -- Initialize
 createDesertEnvironment()
 createBuildButton()
+createNoobButtons()
+
+-- Clean up followers when player leaves
+Players.PlayerRemoving:Connect(function(player)
+	cleanupFollowersForPlayer(player)
+end)
 print("Pyramid building game ready! Click the green button to build!")
 

@@ -1,4 +1,7 @@
-print("Hello from Cursor!")
+-- Updated startup message with last-change timestamp for verification in Studio
+local LAST_CHANGED = "2025-11-28 00:00:00 UTC" -- update this timestamp when you edit the file
+local now = os.date("%Y-%m-%d %H:%M:%S %Z", os.time())
+print("Hello from Cursor! (script start: " .. now .. ") - Last change: " .. LAST_CHANGED)
 
 -- Create three BUILD BUTTONS (one for each pyramid)
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
